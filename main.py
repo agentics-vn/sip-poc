@@ -20,7 +20,7 @@ TEST_FILE = "3.mp3"
 SAMPLE_RATE = 44100
 BYTE_PER_SAMPLE = 2
 CHANNELS = 2
-BYTES_CHUNK = int(SAMPLE_RATE * BYTE_PER_SAMPLE * CHANNELS / 1000)
+BYTES_CHUNK = SAMPLE_RATE * BYTE_PER_SAMPLE * CHANNELS
 
 # Global state
 clients: Set[WebSocket] = set()
@@ -131,8 +131,8 @@ async def websocket_endpoint(websocket: WebSocket):
                 total_bytes = len(audio_data)
                 logger.info(f"Total bytes {total_bytes}, Chunk: {BYTES_CHUNK}")
 
-                for i in range(0, total_bytes, 2048 * 2):
-                    chunk = audio_data[i : i + 2048 * 2]
+                for i in range(0, total_bytes, 2048 * 16):
+                    chunk = audio_data[i : i + 2048 * 16]
                     logger.info(len(chunk))
 
                     try:
@@ -148,9 +148,9 @@ async def websocket_endpoint(websocket: WebSocket):
                         audio_segment.export(buffer, format="mp3", bitrate="8k")
 
                         message = {
-                            "event": "chunk",
+                            "event": "media",
                             "media": {
-                                "payload": base64.b64encode(buffer.getvalue()).decode(),
+                                "payload": base64.b64encode(chunk).decode(),
                                 "is_sync": True,
                             },
                         }
