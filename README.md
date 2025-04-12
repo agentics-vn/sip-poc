@@ -37,4 +37,4 @@ curl --location '<psr url>' \
 
 Where:
 
-your_ngrok_url: get from ngrok console (eg: wss://13f1-113-161-95-53.ngrok-free.app/server/ws)
+your_ngrok_url: get from ngrok console (eg: wss://13f1-113-161-95-53.ngrok-free.app/ws)

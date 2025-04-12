@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import io
 import json
 import logging
 from pathlib import Path
@@ -7,6 +8,7 @@ from typing import Set
 from urllib.parse import parse_qs, urlparse
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from pydub.audio_segment import AudioSegment
 from websockets.exceptions import ConnectionClosed
 
 app = FastAPI()
@@ -14,11 +16,11 @@ app = FastAPI()
 # Configuration
 PCM_FILE = "3.pcm"
 REPEAT_FILE = "3.wav"
-TEST_FILE = "3.wav"
+TEST_FILE = "3.mp3"
 SAMPLE_RATE = 44100
 BYTE_PER_SAMPLE = 2
 CHANNELS = 2
-BYTES_CHUNK = SAMPLE_RATE * BYTE_PER_SAMPLE * CHANNELS
+BYTES_CHUNK = int(SAMPLE_RATE * BYTE_PER_SAMPLE * CHANNELS / 1000)
 
 # Global state
 clients: Set[WebSocket] = set()
@@ -85,7 +87,7 @@ async def send_data():
     send_task = None
 
 
-@app.websocket("/server/ws")
+@app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
     logger.info("Socket connected. Processing...")
@@ -108,88 +110,56 @@ async def websocket_endpoint(websocket: WebSocket):
                 return None
 
             message = data.get("text", "")
-            if message == "test":
-                payload = json.dumps({"call_id": "test", "channel": "stereo"})
-
-                await send_payload_to_clients(payload)
-                try:
-                    pcm_data_global = Path(PCM_FILE).read_bytes()
-                    global pcm_data, offset, send_task
-                    pcm_data = pcm_data_global
-                    offset = 0
-
-                    logger.debug("sending bytes to client")
-                    if send_task is None or send_task.done():
-                        send_task = asyncio.create_task(send_data())
-                except Exception as e:
-                    logger.error(f"Error reading PCM file: {e}")
-                    raise
-                continue
-
-            elif message == "stream_repeat":
-                try:
-                    data = Path(REPEAT_FILE).read_bytes()
-                    payload = json.dumps(
-                        {
-                            "event": "media",
-                            "media": {"payload": base64.b64encode(data).decode()},
-                        }
-                    )
-                    await send_payload_to_servers(payload)
-                except Exception as e:
-                    logger.error(f"Error reading repeat file: {e}")
-                    raise
-                continue
-
-            elif message == "stream_repeat_sync":
-                try:
-                    data = Path(REPEAT_FILE).read_bytes()
-                    payload = json.dumps(
-                        {
-                            "event": "media",
-                            "media": {
-                                "payload": base64.b64encode(data).decode(),
-                                "is_sync": True,
-                            },
-                        }
-                    )
-                    await send_payload_to_servers(payload)
-                except Exception as e:
-                    logger.error(f"Error reading repeat file: {e}")
-                    raise
-                continue
-
-            elif message == "hangup":
+            if message == "hangup":
                 payload = json.dumps({"event": "hangup"})
                 await send_payload_to_servers(payload)
                 continue
 
-            else:
-                msg = try_parse_json(message)
-                if not msg:
-                    continue
+            msg = try_parse_json(message)
+            if not msg:
+                continue
 
-                if msg.get("event") == "media" and msg.get("media", {}).get("payload"):
-                    await send_payload_to_clients(
-                        base64_to_bytes(msg["media"]["payload"])
-                    )
-                elif msg.get("event") == "connected":
-                    logger.info("Starting new call")
+            if msg.get("event") == "media" and msg.get("media", {}).get("payload"):
+                await send_payload_to_clients(base64_to_bytes(msg["media"]["payload"]))
+                continue
+
+            if msg.get("event") == "connected":
+                logger.info("Starting new call")
+                audio_data = Path("3.wav").read_bytes()
+
+                # Get total bytes
+                total_bytes = len(audio_data)
+                logger.info(f"Total bytes {total_bytes}, Chunk: {BYTES_CHUNK}")
+
+                for i in range(0, total_bytes, 2048 * 2):
+                    chunk = audio_data[i : i + 2048 * 2]
+                    logger.info(len(chunk))
+
                     try:
-                        data = Path(TEST_FILE).read_bytes()
-                        payload = json.dumps(
-                            {
-                                "event": "media",
-                                "media": {
-                                    "payload": base64.b64encode(data).decode(),
-                                    "is_sync": True,
-                                },
-                            }
+                        audio_segment = AudioSegment(
+                            chunk,  # dữ liệu thô dạng byte
+                            sample_width=2,  # mỗi mẫu có 2 byte (tương đương 16-bit)
+                            frame_rate=8000,  # tần số lấy mẫu 8kHz (phù hợp với âm thanh thoại) = sample rate
+                            channels=1,  # mono (1 kênh)
                         )
-                        await send_payload_to_clients(payload)
-                    except Exception as e:
-                        logger.error(f"Error reading test file: {e}")
-                        raise
+
+                        buffer = io.BytesIO()
+
+                        audio_segment.export(buffer, format="mp3", bitrate="8k")
+
+                        message = {
+                            "event": "chunk",
+                            "media": {
+                                "payload": base64.b64encode(buffer.getvalue()).decode(),
+                                "is_sync": True,
+                            },
+                        }
+
+                        await send_payload_to_clients(json.dumps(message))
+                        await asyncio.sleep(1)
+                    except Exception:
+                        logger.error("Chunk size doesnt match")
+                        break
 
     except (WebSocketDisconnect, ConnectionClosed):
         logger.info("Disconnected")
